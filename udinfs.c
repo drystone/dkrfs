@@ -351,7 +351,7 @@ int main(int argc, char *argv[])
 
     fuse_opt_add_arg(&args, argv[0]);
     int opt;
-    while ((opt = getopt(argc, argv, "-D:sdho:")) != -1) {
+    while ((opt = getopt(argc, argv, "-sdho:")) != -1) {
         switch(opt) {
         case 'D':
             _device_path = optarg;
@@ -370,7 +370,11 @@ int main(int argc, char *argv[])
             fuse_opt_add_arg(&args, optarg);
             break;
         case 1:
-            fuse_opt_add_arg(&args, optarg);
+            // first bare argument is device, pass others on to fuse
+            if (!_device_path)
+                _device_path = optarg;
+            else
+                fuse_opt_add_arg(&args, optarg);
             break;
         }
     }
@@ -378,7 +382,7 @@ int main(int argc, char *argv[])
     if (_device_path)
         return fuse_main(args.argc, args.argv, &_oper, NULL);
     else {
-        printf("%s: use -D <device-name> to select the UDIN device\n", argv[0]);
+        printf("Usage: %s [fuse-opts] <udin-device-path> <mount-point>\n", argv[0]);
         return -1;
     }
 }
