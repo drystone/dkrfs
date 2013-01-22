@@ -1,0 +1,18 @@
+fuse filesystem interface to the UDIN usb IO devices.
+
+Copyright © 2013 John Hedges <john@drystone.co.uk>
+
+Depends on libfuse (>=2.9)
+
+To run
+$ udinfs -D <ttydevice> [fuseopts] <mountpoint>
+
+A file is created in the mountpoint for each of the UDIN channels, containing
+'1' if the channel is set high or '0' if set low. Relay channels can be
+controlled by writing a '0' or '1' to their correspnging file.
+
+See License for lincensing.
+
+See INSTALL for installation instructions.
+
+Bug reports to John Hedges <john@drystone.co.uk>
