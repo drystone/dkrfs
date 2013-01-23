@@ -186,8 +186,11 @@ static void * _init(struct fuse_conn_info * conn)
         return NULL;
     }
 
-    // reset all relays to off/open
-    _send_command("r0", NULL, 0);
+    // get current channel states
+    _send_command("s0", buf, sizeof(buf));
+    int all_state = atoi(buf);
+    for (i = 0; i < _num_relays; i++)
+        _relays[i].state = (all_state & (1 << i)) ? relay_on : relay_off;
 
     return NULL;
 }
