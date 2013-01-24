@@ -25,10 +25,15 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <pthread.h>
 #include <unistd.h>
 #include <termios.h>
+#include <syslog.h>
+#include <stdarg.h>
+#include <libgen.h>
 
 #include "fuse.h"
 
 #define MAX_RELAYS 8
+
+static const char* _version = "0.1.1";
 
 static struct {
     char * id;
@@ -50,6 +55,24 @@ static time_t _mtime;
 static unsigned int _num_relays;
 static int _ttyfd = -1;
 static char * _device_path = NULL;
+static int _debug = 0;
+
+static const char * _strerror() {
+    static char buf[64];
+    buf[0] = '\0';
+    strerror_r(errno, buf, sizeof(buf));
+    return buf;
+}
+
+static void _log(int level, const char * fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    if (_debug) {
+        vfprintf(stderr, fmt, ap);
+        fputc('\n', stderr);
+    }
+    vsyslog(level, fmt, ap);
+}
 
 static int _relay_from_path(const char * path)
 {
@@ -78,15 +101,19 @@ static int _read_device(char * buf, int size)
     }
 
     if (n == -1) {
-        perror("Failed to read from UDIN device");
+        _log(LOG_ERR, "Failed to read from UDIN device: %s", _strerror());
         return -1;
     }
 
-    if (n < 2 || buf[n-1] != '\n' || buf[n-2] != '\r') { // should at least have \r\n
-        fprintf(stderr, "Partial read from UDIN device:[");
+    if (_debug) {
+        fprintf(stderr, "%d bytes read from UDIN device: [", n);
         for (i = 0; i < n; i++)
             fprintf(stderr, "%d,", buf[i]);
-        puts("]");
+        fputs("]\n", stderr);
+    }
+    
+    if (n < 2 || buf[n-1] != '\n' || buf[n-2] != '\r') { // should at least have \r\n
+        _log(LOG_ERR, "Short read from UDIN device");
         return -1;
     }
 
@@ -98,12 +125,20 @@ static int _write_device(const char * buf)
 {
     int n = write(_ttyfd, buf, strlen(buf));
     if (n == -1) {
-        perror("Failed to write to UDIN device");
+        _log(LOG_ERR, "Failed to write to UDIN device: %s", _strerror());
         return -1;
     }
 
+    if (_debug) {
+        int i;
+        fprintf(stderr, "%d bytes write to UDIN device: [", n);
+        for (i = 0; i < n; i++)
+            fprintf(stderr, "%d,", buf[i]);
+        fputs("]\n", stderr);
+    }
+    
     if (n < strlen(buf)) {
-        fprintf(stderr, "Partial write: %d of %d written\n", n, (int)strlen(buf));
+        _log(LOG_ERR, "Partial write: %d of %d written", n, (int)strlen(buf));
         return -1;
     }
     return 0;
@@ -126,24 +161,24 @@ static int _send_command(const char * command, char * response_buf, size_t bufsi
         return -1;
 
     if (strcmp(buf, command)) {
-        fprintf(stderr, "UDIN device error: failed to echo command (%s != %s)\n", buf, command);
+        _log(LOG_ERR, "UDIN device error: failed to echo command (%s != %s)", buf, command);
         return -1;
     }
 
     if (response_buf && _read_device(response_buf, bufsiz) != 0) {
-        fprintf(stderr, "UDIN device error: failed to get response for command (%s)\n", command);
+        _log(LOG_ERR, "UDIN device error: failed to get response for command (%s)", command);
         return -1;
     }
 
     return 0;
 }
 
-static int _open_device(const char * path) {
+static int _open_device() {
     struct termios tios;
 
-    _ttyfd = open(path, O_RDWR | O_NONBLOCK);
+    _ttyfd = open(_device_path, O_RDWR | O_NONBLOCK);
     if (_ttyfd == -1) {
-        perror("failed to open device");
+        _log(LOG_ERR,"failed to open UDIN device %s: %s", _device_path, _strerror());
         return -1;
     }
 
@@ -164,7 +199,7 @@ static void * _init(struct fuse_conn_info * conn)
     memset(_relays, 0, sizeof(_relays));
     _num_relays = 0;
 
-    if (_open_device(_device_path) != 0)
+    if (_open_device() != 0)
         return NULL;
 
     if (_send_command("?", buf, sizeof(buf)) != 0) {
@@ -175,13 +210,13 @@ static void * _init(struct fuse_conn_info * conn)
     for (i = 0; _device_info[i].id; i++) {
         if (!strcmp(buf, _device_info[i].id)) {
             _num_relays = _device_info[i].num_relays;
-            printf("Device found: %s\n", _device_info[i].id);
+            _log(LOG_INFO, "UDIN device identified as %s", _device_info[i].id);
             break;
         }
     }
 
     if (!_device_info[i].id) {
-        puts("No UDIN device found");
+        _log(LOG_NOTICE, "Not a supported UDIN device at %s", _device_path);
         _close_device();
         return NULL;
     }
@@ -215,7 +250,7 @@ static void _switch_relay(int relay_num, relay_state s)
         for (i = 0; i < _num_relays; i++) {
             int state = all_state & (1 << i);
             if ((_relays[i].state && !state) || (!_relays[i].state && state)) {
-                fprintf(stderr, "Relay %d has inconsistent state\n", i+1);
+                _log(LOG_NOTICE, "Relay %d has inconsistent state", i+1);
                 _num_relays = 0;
             }
         }
@@ -350,22 +385,25 @@ static struct fuse_operations _oper = {
 
 int main(int argc, char *argv[])
 {
+    static const char * usage = "Usage: %s [fuse-opts] <udin-device-path> <mount-point>\n";
+
     struct fuse_args args = FUSE_ARGS_INIT(0, NULL);
 
     fuse_opt_add_arg(&args, argv[0]);
     int opt;
-    while ((opt = getopt(argc, argv, "-sdho:")) != -1) {
+    while ((opt = getopt(argc, argv, "-vsdho:")) != -1) {
         switch(opt) {
-        case 'D':
-            _device_path = optarg;
-            break;
+        case 'v':
+            printf("%s version %s\n", basename(argv[0]), _version);
+            return 0;
         case 's':
             fuse_opt_add_arg(&args, "-s");
             break;
         case 'h':
-            fuse_opt_add_arg(&args, "-h");
+            printf(usage, basename(argv[0]));
             break;
         case 'd':
+            _debug = 1;
             fuse_opt_add_arg(&args, "-d");
             break;
         case 'o':
@@ -385,7 +423,7 @@ int main(int argc, char *argv[])
     if (_device_path)
         return fuse_main(args.argc, args.argv, &_oper, NULL);
     else {
-        printf("Usage: %s [fuse-opts] <udin-device-path> <mount-point>\n", argv[0]);
+        fprintf(stderr, usage, basename(argv[0]));
         return -1;
     }
 }
