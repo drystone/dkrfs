@@ -1,13 +1,13 @@
-fuse filesystem interface to the UDIN usb IO devices.
+fuse filesystem interface to the Denkovi DAEnetIP2 based switches.
 
-Copyright © 2013 John Hedges <john@drystone.co.uk>
+Copyright © 2015 John Hedges <john@drystone.co.uk>
 
 Depends on libfuse (>=2.9)
 
 To run
-$ udinfs -D <ttydevice> [fuseopts] <mountpoint>
+$ dkrfs [fuseopts] -n num_relays -c community peername mountpoint
 
-A file is created in the mountpoint for each of the UDIN channels, containing
+A file is created in the mountpoint for each of the relay channels, containing
 '1' if the channel is set high or '0' if set low. Relay channels can be
 controlled by writing a '0' or '1' to their correspnging file.
 

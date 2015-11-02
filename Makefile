@@ -1,6 +1,6 @@
-TARGET=udinfs
-LIBS=-lfuse -lpthread
-CFLAGS=-g -Wall -O2 -I. -I/usr/include -D_FILE_OFFSET_BITS=64 -DFUSE_USE_VERSION=29
+TARGET=dkrfs
+LIBS=-lfuse -lpthread -lnetsnmp
+CFLAGS=-g -Wall -I. -I/usr/include -D_FILE_OFFSET_BITS=64 -DFUSE_USE_VERSION=29
 
 OBJECTS=$(patsubst %.c, %.o, $(wildcard *.c))
 HEADERS=$(wildcard *.h)
