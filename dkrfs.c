@@ -21,7 +21,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <stdio.h>
 #include <errno.h>
 #include <pthread.h>
-#include <stdarg.h>
 #include <libgen.h>
 
 #include "fuse.h"
@@ -34,9 +33,30 @@ static const char* _version = "0.1.1";
 
 static time_t _start_time;
 
-typedef enum { relay_off = 0, relay_on } relay_state;
+typedef enum { relay_off, relay_on } relay_state;
+
+enum {
+    KEY_NUM_RELAYS,
+    KEY_COMMUNITY,
+    KEY_HELP,
+    KEY_VERSION
+};
+
+static struct fuse_opt options[] = {
+    FUSE_OPT_KEY("-r %u",          KEY_NUM_RELAYS),
+    FUSE_OPT_KEY("relays=%u",      KEY_NUM_RELAYS),
+    FUSE_OPT_KEY("-c %s",          KEY_COMMUNITY),
+    FUSE_OPT_KEY("community=%s",   KEY_COMMUNITY),
+    FUSE_OPT_KEY("-V",             KEY_VERSION),
+    FUSE_OPT_KEY("--version",      KEY_VERSION),
+    FUSE_OPT_KEY("-h",             KEY_HELP),
+    FUSE_OPT_KEY("--help",         KEY_HELP),
+    FUSE_OPT_END
+};
 
 static unsigned int _num_relays = 16;
+static char * _peername = NULL;
+static char * _community = NULL;
 
 static struct snmp_session * _snmp_session;
 
@@ -190,6 +210,8 @@ static int _write(const char *path, const char *buf, size_t size, off_t offset,
 static void _destroy(void * nuttin)
 {
     snmp_close(_snmp_session);
+    free(_community);
+    free(_peername);
 }
  
 static int _chmod(const char * path, mode_t mode)
@@ -226,71 +248,72 @@ static struct fuse_operations _oper = {
     .truncate = _truncate,
 };
 
+static void usage(const char * progname) {
+    printf("Usage: %s [fuse-opts] -c community -n num_relays <device-address> <mount-point>\n", progname);
+}
+
+static int opt_proc(void * data, const char * arg, int key, struct fuse_args * outargs)
+{
+    switch (key) {
+    case FUSE_OPT_KEY_NONOPT:
+        if (_peername == NULL) {
+            _peername = strdup(arg);
+            return 0;
+        }
+        return 1;
+
+    case KEY_NUM_RELAYS:
+        if (arg[0] == '-')
+            _num_relays = atoi(arg + 2);
+        else
+            _num_relays = atoi(strchr(arg, '=') + 1);
+
+        if (_num_relays > MAX_RELAYS)
+            _num_relays = MAX_RELAYS;
+        return 0;
+
+    case KEY_COMMUNITY:
+        free(_community);
+        if (arg[0] == '-')
+            _community = strdup(arg + 2);
+        else
+            _community = strdup(strchr(arg, '=') + 1);
+        return 0;
+
+    case KEY_HELP:
+        usage(outargs->argv[0]);
+        fuse_opt_add_arg(outargs, "-ho");
+        fuse_main(outargs->argc, outargs->argv, &_oper, NULL);
+        exit(1);
+
+    case KEY_VERSION:
+        printf("dkrfs version %s\n", _version);
+        fuse_opt_add_arg(outargs, "--version");
+        fuse_main(outargs->argc, outargs->argv, &_oper, NULL);
+        exit(0); 
+    }
+
+    return 1;
+}
+
 int main(int argc, char *argv[])
 {
-    static const char * usage = "Usage: %s [fuse-opts] -c community -n num_relays <device-address> <mount-point>\n";
-
-    struct fuse_args args = FUSE_ARGS_INIT(0, NULL);
-
-    char * peername = NULL;
-    char * community = NULL;
 
     _start_time = time(NULL);
 
-    fuse_opt_add_arg(&args, argv[0]);
-    int opt;
-    while ((opt = getopt(argc, argv, "-vVfsdho:n:c:")) != -1) {
-        switch(opt) {
-        case 'v':
-            printf("%s version %s\n", basename(argv[0]), _version);
-            return 0;
-        case 'V':
-            fuse_opt_add_arg(&args, "-V");
-            break;
-        case 'f':
-            fuse_opt_add_arg(&args, "-f");
-            break;
-        case 's':
-            fuse_opt_add_arg(&args, "-s");
-            break;
-        case 'h':
-            printf(usage, basename(argv[0]));
-            break;
-        case 'd':
-            fuse_opt_add_arg(&args, "-d");
-            break;
-        case 'o':
-            fuse_opt_add_arg(&args, "-o");
-            fuse_opt_add_arg(&args, optarg);
-            break;
-        case 'n':
-            _num_relays = atoi(optarg);
-            if (_num_relays > MAX_RELAYS)
-                _num_relays = MAX_RELAYS;
-            break;
-        case 'c':
-            community = optarg;
-            break;
-        case 1:
-            // first bare argument is device, pass others on to fuse
-            if (!peername)
-                peername = optarg;
-            else
-                fuse_opt_add_arg(&args, optarg);
-            break;
-        }
-    }
+    struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+    fuse_opt_parse(&args, NULL, options, opt_proc);
 
-    if (peername && community) {
+    if (_peername && _community) {
         unsigned int i;
         struct snmp_session sess;
 
         init_snmp(basename(argv[0]));
         snmp_sess_init(&sess);
-        sess.peername = peername;
+        sess.peername = _peername;
         sess.version = SNMP_VERSION_1;
-        sess.community = (unsigned char *)community;
-        sess.community_len = strlen(community);
+        sess.community = (unsigned char *)_community;
+        sess.community_len = strlen(_community);
         _snmp_session = snmp_open(&sess);
         if(!_snmp_session)
             return -1;
@@ -304,7 +327,7 @@ int main(int argc, char *argv[])
 
         return fuse_main(args.argc, args.argv, &_oper, NULL);
     } else {
-        fprintf(stderr, usage, basename(argv[0]));
+        usage(argv[0]);
         return -1;
     }
 }
